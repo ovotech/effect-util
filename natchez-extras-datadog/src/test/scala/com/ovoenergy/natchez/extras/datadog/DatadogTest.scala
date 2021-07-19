@@ -11,7 +11,7 @@ import natchez.EntryPoint
 import org.http4s.Request
 import org.http4s.circe.CirceEntityDecoder._
 import org.http4s.syntax.literals._
-import org.scalatest.Inspectors
+import org.scalatest.{Inspectors, OptionValues}
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
 
@@ -21,7 +21,7 @@ import scala.concurrent.duration._
  * This tests both the datadog span code itself and the submission of metrics over HTTP
  * Could be expanded but even just these tests exposed concurrency issues with my original code.
  */
-class DatadogTest extends AnyWordSpec with Matchers {
+class DatadogTest extends AnyWordSpec with Matchers with OptionValues {
 
   def run(f: EntryPoint[IO] => IO[Unit]): IO[List[Request[IO]]] =
     TestClient[IO].flatMap(c => entryPoint(c.client, "test", "blah").use(f) >> c.requests)
@@ -80,8 +80,14 @@ class DatadogTest extends AnyWordSpec with Matchers {
       span.`type` shouldBe None
       span.duration > 0 shouldBe true
       span.meta.get("k") shouldBe Some("v")
-      span.metrics shouldBe Map("__sampling_priority_v1" -> 2.0)
       span.meta.contains("traceToken") shouldBe true
+    }
+
+    "Only include the sampling priority metric on the root span" in {
+      val res = run(_.root("root").use(_.span("span").use(_ => IO.sleep(1.milli)))).unsafeRunSync()
+      val spans = res.flatTraverse(_.as[List[List[SubmittableSpan]]]).unsafeRunSync().flatten
+      spans.find(_.parentId.isEmpty).value.metrics shouldBe Map("_sampling_priority_v1" -> 2.0)
+      spans.find(_.parentId.isDefined).value.metrics shouldBe Map.empty
     }
 
     "Infer the right span.type from any tags set" in {

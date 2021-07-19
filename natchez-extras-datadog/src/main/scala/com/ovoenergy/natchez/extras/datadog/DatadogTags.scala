@@ -12,11 +12,8 @@ object DatadogTags {
 
   object SpanType {
     case object Custom extends SpanType
-
     case object Cache extends SpanType
-
     case object Web extends SpanType
-
     case object Db extends SpanType
   }
 

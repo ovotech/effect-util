@@ -1,39 +1,32 @@
 package com.ovoenergy.natchez.extras.datadog
 
-import cats.data.OptionT
 import cats.effect.Sync
 import cats.syntax.apply._
 import cats.syntax.functor._
+import com.ovoenergy.natchez.extras.datadog.data.UnsignedLong
+import com.ovoenergy.natchez.extras.datadog.headers.TraceHeaders._
 import natchez.Kernel
+import org.http4s.Headers
+import org.typelevel.ci._
 
 import java.util.UUID
-import scala.util.Try
 
 case class SpanIdentifiers(
-  traceId: Long,
-  spanId: Long,
-  parentId: Option[Long],
+  traceId: UnsignedLong,
+  spanId: UnsignedLong,
+  parentId: Option[UnsignedLong],
   traceToken: String
 )
 
 object SpanIdentifiers {
 
-  private def randomAbsLong[F[_]: Sync]: F[Long] =
-    Sync[F].delay(scala.util.Random.nextLong().abs)
-
   private def randomUUID[F[_]: Sync]: F[String] =
     Sync[F].delay(UUID.randomUUID.toString)
 
-  private def stringHeader[F[_]: Sync](kernel: Kernel, name: String): OptionT[F, String] =
-    OptionT.fromOption(kernel.toHeaders.get(name))
-
-  private def longHeader[F[_]: Sync](kernel: Kernel, name: String): OptionT[F, Long] =
-    stringHeader(kernel, name).subflatMap(h => Try(h.toLong).toOption)
-
   def create[F[_]: Sync]: F[SpanIdentifiers] =
     (
-      randomAbsLong,
-      randomAbsLong,
+      UnsignedLong.random[F],
+      UnsignedLong.random[F],
       Sync[F].pure(None),
       randomUUID
     ).mapN(SpanIdentifiers.apply)
@@ -43,7 +36,16 @@ object SpanIdentifiers {
    * This means the parent ID will be set but a new span ID will be created
    */
   def child[F[_]: Sync](identifiers: SpanIdentifiers): F[SpanIdentifiers] =
-    randomAbsLong.map(spanId => identifiers.copy(parentId = Some(identifiers.spanId), spanId = spanId))
+    UnsignedLong.random.map(spanId => identifiers.copy(parentId = Some(identifiers.spanId), spanId = spanId))
+
+  private def orRandom[F[_]: Sync](option: Option[UnsignedLong]): F[UnsignedLong] =
+    option.fold(UnsignedLong.random)(Sync[F].pure)
+
+  private def traceId[F[_]: Sync](headers: Headers): F[UnsignedLong] =
+    orRandom(headers.get[`X-Trace-Id`].map(_.value).orElse(headers.get[`X-B3-Trace-Id`].map(_.value)))
+
+  private def parentId(headers: Headers): Option[UnsignedLong] =
+    headers.get[`X-Parent-Id`].map(_.value).orElse(headers.get[`X-B3-Span-Id`].map(_.value))
 
   /**
    * Build span identifiers from HTTP headers provided by a client,
@@ -51,21 +53,23 @@ object SpanIdentifiers {
    * partial data (i.e. just a trace token) is still useful to us
    */
   def fromKernel[F[_]: Sync](rawKernel: Kernel): F[SpanIdentifiers] = {
-    val kernel = rawKernel.copy(toHeaders = rawKernel.toHeaders.map { case (k, v) => k.toLowerCase -> v })
+    val headers = Headers(rawKernel.toHeaders.toSeq)
     (
-      longHeader(kernel, "x-trace-id").getOrElseF(randomAbsLong),
-      randomAbsLong,
-      longHeader(kernel, "x-parent-id").value,
-      stringHeader(kernel, "x-trace-token").getOrElseF(randomUUID)
+      traceId(headers),
+      UnsignedLong.random[F],
+      Sync[F].pure(parentId(headers)),
+      headers.get(ci"x-trace-token").fold(randomUUID)(v => Sync[F].pure(v.head.value))
     ).mapN(SpanIdentifiers.apply)
   }
 
   def toKernel(ids: SpanIdentifiers): Kernel =
     Kernel(
-      Map(
-        "X-Parent-Id" -> ids.spanId.toString,
-        "X-Trace-Id" -> ids.traceId.toString,
+      Headers(
+        `X-Trace-Id`(ids.traceId),
+        `X-Parent-Id`(ids.spanId),
+        `X-B3-Trace-Id`(ids.traceId),
+        `X-B3-Span-Id`(ids.spanId),
         "X-Trace-Token" -> ids.traceToken
-      )
+      ).headers.map(r => r.name.toString -> r.value).toMap
     )
 }

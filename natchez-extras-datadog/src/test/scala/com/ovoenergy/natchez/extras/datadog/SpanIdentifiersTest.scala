@@ -3,12 +3,19 @@ package com.ovoenergy.natchez.extras.datadog
 import cats.effect.IO
 import cats.effect.unsafe.implicits.global
 import com.ovoenergy.natchez.extras.datadog.SpanIdentifiers._
+import com.ovoenergy.natchez.extras.datadog.data.UnsignedLong
 import natchez.Kernel
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpec
+import org.scalatest.{EitherValues, OptionValues}
 import org.scalatestplus.scalacheck.Checkers
 
-class SpanIdentifiersTest extends AnyWordSpec with Matchers with Checkers {
+class SpanIdentifiersTest
+    extends AnyWordSpec
+    with Matchers
+    with Checkers
+    with OptionValues
+    with EitherValues {
 
   "Span identifiers" should {
 
@@ -48,5 +55,23 @@ class SpanIdentifiersTest extends AnyWordSpec with Matchers with Checkers {
 
   "Ignore header case when extracting info" in {
     fromKernel[IO](Kernel(Map("x-TRACe-tokeN" -> "foo"))).unsafeRunSync().traceToken shouldBe "foo"
+  }
+
+  "Output hex-encoded B3 Trace IDs alongside decimal encoded Datadog IDs" in {
+    val result = SpanIdentifiers.create[IO].map(SpanIdentifiers.toKernel).unsafeRunSync()
+    val ddSpanId: String = result.toHeaders.get("X-Trace-Id").value
+    val b3SpanId: String = result.toHeaders.get("X-B3-Trace-Id").value
+    val ddULong = UnsignedLong.fromString(ddSpanId, 10)
+    val b3ULong = UnsignedLong.fromString(b3SpanId, 16)
+    ddULong shouldBe b3ULong
+  }
+
+  "Output hex-encoded B3 Span IDs alongside decimal encoded Datadog Parent IDs" in {
+    val result = SpanIdentifiers.create[IO].map(SpanIdentifiers.toKernel).unsafeRunSync()
+    val ddSpanId: String = result.toHeaders.get("X-Parent-Id").value
+    val b3SpanId: String = result.toHeaders.get("X-B3-Span-Id").value
+    val ddULong = UnsignedLong.fromString(ddSpanId, 10)
+    val b3ULong = UnsignedLong.fromString(b3SpanId, 16)
+    ddULong shouldBe b3ULong
   }
 }
